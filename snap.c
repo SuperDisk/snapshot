@@ -13,15 +13,17 @@
 
 struct program_state {
     int counter;
+    int target_count;
     ucontext_t context;
     char stack[STACK_SIZE];
     int has_saved_context;
 };
 
 static struct program_state* state;
+static char* state_filename;
 
 void dump_state() {
-    printf("Saving state to file...\n");
+    printf("Saving state to file %s...\n", state_filename);
 
     if (getcontext(&state->context) == -1) {
         perror("getcontext");
@@ -35,7 +37,7 @@ void dump_state() {
 
     state->has_saved_context = 1;
 
-    FILE *fp = fopen("program_state.bin", "wb");
+    FILE *fp = fopen(state_filename, "wb");
     if (!fp) {
         perror("fopen");
         exit(1);
@@ -48,11 +50,29 @@ void dump_state() {
     }
 
     fclose(fp);
-    printf("State saved. Run with -r to restore.\n");
+    printf("State saved. Run with -r and same filename to restore.\n");
     exit(0);
 }
 
+void print_usage(const char* program) {
+    printf("Usage:\n");
+    printf("  Fresh start: %s <count> <filename>\n", program);
+    printf("  Restore: %s -r <filename>\n", program);
+    exit(1);
+}
+
 int main(int argc, char *argv[]) {
+    // Parse arguments
+    if (argc < 2) print_usage(argv[0]);
+
+    if (strcmp(argv[1], "-r") == 0) {
+        if (argc != 3) print_usage(argv[0]);
+        state_filename = argv[2];
+    } else {
+        if (argc != 3) print_usage(argv[0]);
+        state_filename = argv[2];
+    }
+
     // Map our memory region
     void *buffer = mmap((void*)MAP_ADDRESS, BUFFER_SIZE,
                        PROT_READ | PROT_WRITE,
@@ -67,9 +87,9 @@ int main(int argc, char *argv[]) {
     state = (struct program_state*)buffer;
 
     // Check if we're restoring
-    if (argc > 1 && strcmp(argv[1], "-r") == 0) {
-        printf("Restoring from saved state...\n");
-        FILE *fp = fopen("program_state.bin", "rb");
+    if (strcmp(argv[1], "-r") == 0) {
+        printf("Restoring from saved state in %s...\n", state_filename);
+        FILE *fp = fopen(state_filename, "rb");
         if (!fp) {
             perror("fopen");
             return 1;
@@ -90,6 +110,7 @@ int main(int argc, char *argv[]) {
     } else {
         // Fresh start
         memset(state, 0, sizeof(struct program_state));
+        state->target_count = atoi(argv[1]);
         state->context.uc_stack.ss_sp = state->stack;
         state->context.uc_stack.ss_size = STACK_SIZE;
         printf("Fresh start. Memory mapped at: %p\n", buffer);
@@ -100,7 +121,7 @@ int main(int argc, char *argv[]) {
         printf("Counter: %d\n", state->counter);
         state->counter++;
 
-        if (state->counter == 3) {
+        if (state->counter == state->target_count) {
             dump_state();
             printf("Restored from saved state!\n");
         }
