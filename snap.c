@@ -22,36 +22,47 @@ struct program_state {
 static struct program_state* state;
 static char* state_filename;
 
-void dump_state() {
-    printf("Saving state to file %s...\n", state_filename);
+// This is the function that will run on our managed stack
+void managed_func() {
+    for (;;) {
+        printf("Counter: %d\n", state->counter);
+        state->counter++;
 
-    if (getcontext(&state->context) == -1) {
-        perror("getcontext");
-        exit(1);
+        if (state->counter == state->target_count) {
+            printf("Saving state to file %s...\n", state_filename);
+
+            // Now we're on our managed stack, so getcontext will capture the right stack
+            if (getcontext(&state->context) == -1) {
+                perror("getcontext");
+                exit(1);
+            }
+
+            if (state->has_saved_context) {
+                puts("State restored successfully!");
+                continue;
+            }
+
+            state->has_saved_context = 1;
+
+            FILE *fp = fopen(state_filename, "wb");
+            if (!fp) {
+                perror("fopen");
+                exit(1);
+            }
+
+            if (fwrite((void*)MAP_ADDRESS, BUFFER_SIZE, 1, fp) != 1) {
+                perror("fwrite");
+                fclose(fp);
+                exit(1);
+            }
+
+            fclose(fp);
+            printf("State saved. Run with -r and same filename to restore.\n");
+            exit(0);
+        }
+
+        sleep(1);
     }
-
-    if (state->has_saved_context) {
-        // We've been restored
-        return;
-    }
-
-    state->has_saved_context = 1;
-
-    FILE *fp = fopen(state_filename, "wb");
-    if (!fp) {
-        perror("fopen");
-        exit(1);
-    }
-
-    if (fwrite((void*)MAP_ADDRESS, BUFFER_SIZE, 1, fp) != 1) {
-        perror("fwrite");
-        fclose(fp);
-        exit(1);
-    }
-
-    fclose(fp);
-    printf("State saved. Run with -r and same filename to restore.\n");
-    exit(0);
 }
 
 void print_usage(const char* program) {
@@ -78,7 +89,6 @@ int main(int argc, char *argv[]) {
                        PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
                        -1, 0);
-
     if (buffer == MAP_FAILED) {
         perror("mmap");
         return 1;
@@ -89,6 +99,7 @@ int main(int argc, char *argv[]) {
     // Check if we're restoring
     if (strcmp(argv[1], "-r") == 0) {
         printf("Restoring from saved state in %s...\n", state_filename);
+
         FILE *fp = fopen(state_filename, "rb");
         if (!fp) {
             perror("fopen");
@@ -100,34 +111,43 @@ int main(int argc, char *argv[]) {
             fclose(fp);
             return 1;
         }
-        fclose(fp);
 
+        fclose(fp);
         printf("State loaded. Resuming from counter: %d\n", state->counter);
+
         if (setcontext(&state->context) == -1) {
             perror("setcontext");
             return 1;
         }
-    } else {
-        // Fresh start
-        memset(state, 0, sizeof(struct program_state));
-        state->target_count = atoi(argv[1]);
-        state->context.uc_stack.ss_sp = state->stack;
-        state->context.uc_stack.ss_size = STACK_SIZE;
-        printf("Fresh start. Memory mapped at: %p\n", buffer);
+
+        puts("this should never happen");
+        return 1;
     }
 
-    // Main loop
-    for (;;) {
-        printf("Counter: %d\n", state->counter);
-        state->counter++;
+    // Fresh start
+    memset(state, 0, sizeof(struct program_state));
+    state->target_count = atoi(argv[1]);
 
-        if (state->counter == state->target_count) {
-            dump_state();
-            printf("Restored from saved state!\n");
-        }
-
-        sleep(1);
+    // Initialize the context that will run on our managed stack
+    if (getcontext(&state->context) == -1) {
+        perror("getcontext");
+        return 1;
     }
 
-    return 0;
+    // Set up the new context to use our managed stack
+    state->context.uc_stack.ss_sp = state->stack;
+    state->context.uc_stack.ss_size = STACK_SIZE;
+
+    // Make the context start executing our managed function
+    makecontext(&state->context, managed_func, 0);
+
+    printf("Fresh start. Memory mapped at: %p\n", buffer);
+
+    // Switch to our managed stack
+    if (setcontext(&state->context) == -1) {
+        perror("setcontext");
+        return 1;
+    }
+    puts("somehow we got back here.");
+    return 1;
 }
