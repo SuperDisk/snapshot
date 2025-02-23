@@ -23,6 +23,7 @@ struct program_state {
   ucontext_t context;
   mspace arena;
   int has_saved_context;
+  int needs_load;  // Flag to indicate we want to load a snapshot
 
   char stack[STACK_SIZE];
   char heap[HEAP_SIZE];
@@ -30,6 +31,7 @@ struct program_state {
 
 static struct program_state* state;
 static char* state_filename;
+static ucontext_t main_context;  // Store the main context
 
 void dump_snapshot() {
   // Now we're on our managed stack, so getcontext will capture the right stack
@@ -108,7 +110,6 @@ static void *lua_dlmalloc_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
   }
 }
 
-
 void managed_func() {
   lua_State *L = lua_newstate(lua_dlmalloc_alloc, state->arena);
   luaL_openlibs(L);
@@ -131,7 +132,14 @@ void managed_func() {
       puts("We came back...");
     } else if (strcmp(buffer, "!load") == 0) {
       printf("Loading state...\n");
-      load_snapshot(state);
+      // Set the flag and return to main context
+      state->needs_load = 1;
+      if (swapcontext(&state->context, &main_context) == -1) {
+        perror("swapcontext");
+        exit(1);
+      }
+      // If we get here, the load was successful
+      puts("State restored!");
     } else {
       // Execute Lua code
       if (luaL_dostring(L, buffer) != LUA_OK) {
@@ -146,7 +154,7 @@ void managed_func() {
 
 void print_usage(const char* program) {
   printf("Usage:\n");
-  printf("  Fresh start: %s <count> <filename>\n", program);
+  printf("  Fresh start: %s <filename>\n", program);
   printf("  Restore: %s -r <filename>\n", program);
   exit(1);
 }
@@ -179,34 +187,41 @@ int main(int argc, char *argv[]) {
   if (strcmp(argv[1], "-r") == 0) {
     printf("Restoring from saved state in %s...\n", state_filename);
     load_snapshot(buffer);
-  } else {
-    // Fresh start
-    memset(state, 0, sizeof(struct program_state));
-    state->arena = create_mspace_with_base(state->heap, HEAP_SIZE, 1);
+  }
 
-    // Initialize the context that will run on our managed stack
-    if (getcontext(&state->context) == -1) {
-      perror("getcontext");
-      return 1;
-    }
+  // Fresh start
+  memset(state, 0, sizeof(struct program_state));
+  state->arena = create_mspace_with_base(state->heap, HEAP_SIZE, 1);
 
-    // Set up the new context to use our managed stack
-    state->context.uc_stack.ss_sp = state->stack;
-    state->context.uc_stack.ss_size = STACK_SIZE;
-
-    // Make the context start executing our managed function
-    /* int target_count = atoi(argv[1]); */
-    makecontext(&state->context, (void (*)())managed_func, 0);
-
-    printf("Fresh start. Memory mapped at: %p\n", buffer);
-
-    // Switch to our managed stack
-    if (setcontext(&state->context) == -1) {
-      perror("setcontext");
-      return 1;
-    }
-
-    puts("somehow we got back here.");
+  // Initialize the context that will run on our managed stack
+  if (getcontext(&state->context) == -1) {
+    perror("getcontext");
     return 1;
   }
+
+  // Set up the new context to use our managed stack
+  state->context.uc_stack.ss_sp = state->stack;
+  state->context.uc_stack.ss_size = STACK_SIZE;
+  state->context.uc_link = &main_context;  // Return to main context when done
+
+  // Make the context start executing our managed function
+  makecontext(&state->context, (void (*)())managed_func, 0);
+
+  printf("Fresh start. Memory mapped at: %p\n", buffer);
+
+  // Main loop - switch between contexts as needed
+  while (1) {
+    if (swapcontext(&main_context, &state->context) == -1) {
+      perror("swapcontext");
+      return 1;
+    }
+
+    // If we get here, we've returned from the managed context
+    if (state->needs_load) {
+      load_snapshot(buffer);
+      // load_snapshot doesn't return - it switches to the loaded context
+    }
+  }
+
+  return 0;
 }
