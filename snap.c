@@ -58,25 +58,30 @@ void dump_snapshot() {
   }
 
   fclose(fp);
-  /* printf("State saved. Run with -r and same filename to restore.\n"); */
-  /* exit(0); */
+
+  state->has_saved_context = 0;
 }
 
 void load_snapshot(void* buffer) {
+  puts("opening file...");
   FILE *fp = fopen(state_filename, "rb");
   if (!fp) {
     perror("fopen");
     exit(1);
   }
 
+  puts("reading file...");
   if (fread(buffer, sizeof(struct program_state), 1, fp) != 1) {
     perror("fread");
     fclose(fp);
     exit(1);
   }
 
+  puts("closing file");
   fclose(fp);
   puts("State loaded.");
+
+  state->has_saved_context = 0;
 
   if (setcontext(&state->context) == -1) {
     perror("setcontext");
