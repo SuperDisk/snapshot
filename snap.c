@@ -41,7 +41,7 @@ void dump_snapshot() {
   }
 
   if (state->has_saved_context) {
-    puts("State restored successfully!");
+    /* puts("State restored successfully!"); */
     return;
   }
 
@@ -65,23 +65,23 @@ void dump_snapshot() {
 }
 
 void load_snapshot(void* buffer) {
-  puts("opening file...");
+  /* puts("opening file..."); */
   FILE *fp = fopen(state_filename, "rb");
   if (!fp) {
     perror("fopen");
     exit(1);
   }
 
-  puts("reading file...");
+  /* puts("reading file..."); */
   if (fread(buffer, sizeof(struct program_state), 1, fp) != 1) {
     perror("fread");
     fclose(fp);
     exit(1);
   }
 
-  puts("closing file");
+  /* puts("closing file"); */
   fclose(fp);
-  puts("State loaded.");
+  /* puts("State loaded."); */
 
   state->has_saved_context = 0;
 
@@ -115,7 +115,7 @@ void managed_func() {
   luaL_openlibs(L);
 
   for (;;) {
-    printf("Enter Lua code (or !dump / !load): ");
+    printf("> ");
 
     char buffer[256];
     if (!fgets(buffer, sizeof(buffer), stdin)) {
@@ -127,11 +127,11 @@ void managed_func() {
     buffer[strcspn(buffer, "\n")] = 0;
 
     if (strcmp(buffer, "!dump") == 0) {
-      printf("Saving state...\n");
+      /* printf("Saving state...\n"); */
       dump_snapshot();
-      puts("We came back...");
+      /* puts("We came back..."); */
     } else if (strcmp(buffer, "!load") == 0) {
-      printf("Loading state...\n");
+      /* printf("Loading state...\n"); */
       // Set the flag and return to main context
       state->needs_load = 1;
       if (swapcontext(&state->context, &main_context) == -1) {
@@ -139,7 +139,7 @@ void managed_func() {
         exit(1);
       }
       // If we get here, the load was successful
-      puts("State restored!");
+      /* puts("State restored!"); */
     } else {
       // Execute Lua code
       if (luaL_dostring(L, buffer) != LUA_OK) {
