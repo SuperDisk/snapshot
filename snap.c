@@ -7,6 +7,10 @@
 #include <errno.h>
 #include <ucontext.h>
 
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+
 #define USE_DL_PREFIX
 #define ONLY_MSPACES 1
 #include "dlmalloc.c"
@@ -54,8 +58,8 @@ void dump_snapshot() {
   }
 
   fclose(fp);
-  printf("State saved. Run with -r and same filename to restore.\n");
-  exit(0);
+  /* printf("State saved. Run with -r and same filename to restore.\n"); */
+  /* exit(0); */
 }
 
 void load_snapshot(void* buffer) {
@@ -83,25 +87,56 @@ void load_snapshot(void* buffer) {
   exit(1);
 }
 
-// This is the function that will run on our managed stack
-void managed_func(int target_count) {
-  int counter = 0;
+static void *lua_dlmalloc_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
+  mspace arena = (mspace)ud;
+
+  if (nsize == 0) {
+    // Free memory
+    mspace_free(arena, ptr);
+    return NULL;
+  } else if (ptr == NULL) {
+    // Allocate new block
+    return mspace_malloc(arena, nsize);
+  } else {
+    // Resize block
+    return mspace_realloc(arena, ptr, nsize);
+  }
+}
+
+
+void managed_func() {
+  lua_State *L = lua_newstate(lua_dlmalloc_alloc, state->arena);
+  luaL_openlibs(L);
+
   for (;;) {
-    printf("Counter: %d\n", counter);
-    counter++;
+    printf("Enter Lua code (or !dump / !load): ");
 
-    char* junk = (char*)mspace_malloc(state->arena, 5);
-    memcpy(junk, "hello", 5);
-    printf("allocated up a string at %p\n", (void*)junk);
-
-    if (counter == target_count) {
-      printf("Saving state to file %s...\n", state_filename);
-      dump_snapshot();
-      puts("We came back...");
+    char buffer[256];
+    if (!fgets(buffer, sizeof(buffer), stdin)) {
+      perror("fgets");
+      continue;
     }
 
-    sleep(1);
+    // Remove newline character if present
+    buffer[strcspn(buffer, "\n")] = 0;
+
+    if (strcmp(buffer, "!dump") == 0) {
+      printf("Saving state...\n");
+      dump_snapshot();
+      puts("We came back...");
+    } else if (strcmp(buffer, "!load") == 0) {
+      printf("Loading state...\n");
+      load_snapshot(state);
+    } else {
+      // Execute Lua code
+      if (luaL_dostring(L, buffer) != LUA_OK) {
+        fprintf(stderr, "Lua error: %s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+      }
+    }
   }
+
+  lua_close(L); // Cleanup Lua state
 }
 
 void print_usage(const char* program) {
@@ -119,8 +154,8 @@ int main(int argc, char *argv[]) {
     if (argc != 3) print_usage(argv[0]);
     state_filename = argv[2];
   } else {
-    if (argc != 3) print_usage(argv[0]);
-    state_filename = argv[2];
+    if (argc != 2) print_usage(argv[0]);
+    state_filename = argv[1];
   }
 
   // Map our memory region
@@ -155,8 +190,8 @@ int main(int argc, char *argv[]) {
     state->context.uc_stack.ss_size = STACK_SIZE;
 
     // Make the context start executing our managed function
-    int target_count = atoi(argv[1]);
-    makecontext(&state->context, (void (*)())managed_func, 1, target_count);
+    /* int target_count = atoi(argv[1]); */
+    makecontext(&state->context, (void (*)())managed_func, 0);
 
     printf("Fresh start. Memory mapped at: %p\n", buffer);
 
